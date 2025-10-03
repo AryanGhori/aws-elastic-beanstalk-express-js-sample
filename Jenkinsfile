@@ -2,16 +2,12 @@ pipeline {
   agent any
 
   environment {
-    REGISTRY         = "docker.io"
-    IMAGE            = "aryanghori/eb-express"
-    TAG              = "build-${env.BUILD_NUMBER}"
-    CREDS_ID         = "dockerhub-creds"
-    // Point Docker CLI at your DinD daemon (adjust the host to your actual service name)
-    DOCKER_HOST      = "tcp://dind:2375"
-    // Speed up builds and better caching
-    DOCKER_BUILDKIT  = "1"
-    // Optional: helps docker build with large contexts
-    COMPOSE_DOCKER_CLI_BUILD = "1"
+    REGISTRY = "docker.io"
+    IMAGE    = "aryanghori/eb-express"
+    TAG      = "build-${env.BUILD_NUMBER}"
+    CREDS_ID = "dockerhub-creds"
+    // Optional: speed up docker builds
+    DOCKER_BUILDKIT = "1"
   }
 
   options {
@@ -65,7 +61,7 @@ pipeline {
             mkdir -p owasp
             chmod -R 0777 owasp
 
-            # Pin the image tag and cache NVD data under /report/data
+            # Pin version and cache NVD DB to speed future runs
             docker run --rm \
               --user 0:0 \
               -e NVD_API_KEY="$NVD_API_KEY" \
@@ -73,28 +69,20 @@ pipeline {
               -v "$PWD"/owasp:/report \
               owasp/dependency-check:9.2.0 \
               --scan /src \
-              --format "HTML" \
+              --format HTML \
               --out /report \
               --data /report/data \
-              --project "eb-express" \
+              --project eb-express \
+              --nvdApiKey "$NVD_API_KEY" \
+              --nvdMaxRetryCount 3 \
+              --nvdValidForHours 24 \
               --failOnCVSS 7
           '''
         }
       }
       post {
         always {
-          // keep the HTML around even if filename drifts
           archiveArtifacts artifacts: 'owasp/dependency-check-report.html', fingerprint: true, allowEmptyArchive: true
-          // Optional (requires Publish HTML Reports plugin):
-          script {
-            try {
-              publishHTML(target: [
-                reportDir: 'owasp',
-                reportFiles: 'dependency-check-report.html',
-                reportName: 'OWASP Dependency-Check'
-              ])
-            } catch (ignored) { /* plugin not installed, ignore */ }
-          }
         }
       }
     }
