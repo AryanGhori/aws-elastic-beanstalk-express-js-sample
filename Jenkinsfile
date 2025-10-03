@@ -2,10 +2,22 @@ pipeline {
   agent any
 
   environment {
-    REGISTRY = "docker.io"
-    IMAGE    = "aryanghori/eb-express"
-    TAG      = "build-${env.BUILD_NUMBER}"
-    CREDS_ID = "dockerhub-creds"
+    REGISTRY         = "docker.io"
+    IMAGE            = "aryanghori/eb-express"
+    TAG              = "build-${env.BUILD_NUMBER}"
+    CREDS_ID         = "dockerhub-creds"
+    // Point Docker CLI at your DinD daemon (adjust the host to your actual service name)
+    DOCKER_HOST      = "tcp://dind:2375"
+    // Speed up builds and better caching
+    DOCKER_BUILDKIT  = "1"
+    // Optional: helps docker build with large contexts
+    COMPOSE_DOCKER_CLI_BUILD = "1"
+  }
+
+  options {
+    skipDefaultCheckout(true)
+    buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '10'))
+    timestamps()
   }
 
   stages {
@@ -29,10 +41,9 @@ pipeline {
           npm --version
 
           # assignment asks to run: npm install --save
-          # this will not break even if package.json has no deps
           npm install --save || true
 
-          # create a temporary smoke test without editing package.json
+          # minimal smoke test without touching package.json
           mkdir -p __tests__
           cat > __tests__/smoke.test.js <<'JS'
           test('smoke test runs without modifying package.json', () => {
@@ -40,46 +51,53 @@ pipeline {
           });
           JS
 
-          # run jest using npx --yes so nothing is written to package.json
           npx --yes jest@29 --ci
         '''
       }
     }
 
-    
     stage('Dependency Scan (Fail on High/Critical)') {
       steps {
         withCredentials([string(credentialsId: 'NVD_API_KEY', variable: 'NVD_API_KEY')]) {
-       	  sh '''
-     	    set -eux
-    	    # fresh, writable report dir for the container
-      	    rm -rf owasp
-     	    mkdir -p owasp
-       	    chmod -R 0777 owasp
+          sh '''
+            set -eux
+            rm -rf owasp
+            mkdir -p owasp
+            chmod -R 0777 owasp
 
-     	    docker run --rm \
-	      --user 0:0 \
-	      -e NVD_API_KEY=$NVD_API_KEY \
-	      -v "$PWD":/src:ro \
-	      -v "$PWD"/owasp:/report \
-	      owasp/dependency-check:latest \
-	      --scan /src \
-	      --format "HTML" \
-	      --out /report \
-	      --project "eb-express" \
-	      --failOnCVSS 7
-  	   '''
-         }
+            # Pin the image tag and cache NVD data under /report/data
+            docker run --rm \
+              --user 0:0 \
+              -e NVD_API_KEY="$NVD_API_KEY" \
+              -v "$PWD":/src:ro \
+              -v "$PWD"/owasp:/report \
+              owasp/dependency-check:9.2.0 \
+              --scan /src \
+              --format "HTML" \
+              --out /report \
+              --data /report/data \
+              --project "eb-express" \
+              --failOnCVSS 7
+          '''
+        }
       }
       post {
         always {
-      		// allowEmptyArchive avoids marking build failed if file name changes
-         archiveArtifacts artifacts: 'owasp/dependency-check-report.html', fingerprint: true, allowEmptyArchive: true
-    	}
+          // keep the HTML around even if filename drifts
+          archiveArtifacts artifacts: 'owasp/dependency-check-report.html', fingerprint: true, allowEmptyArchive: true
+          // Optional (requires Publish HTML Reports plugin):
+          script {
+            try {
+              publishHTML(target: [
+                reportDir: 'owasp',
+                reportFiles: 'dependency-check-report.html',
+                reportName: 'OWASP Dependency-Check'
+              ])
+            } catch (ignored) { /* plugin not installed, ignore */ }
+          }
+        }
       }
     }
-
-    
 
     stage('Build Docker Image') {
       steps {
@@ -87,7 +105,7 @@ pipeline {
           set -eux
           docker version
 
-          # Build using an inline Dockerfile (no file added to repo)
+          # Build using an inline Dockerfile
           docker build -t $REGISTRY/$IMAGE:$TAG -f - . <<'DOCKER'
           FROM node:16-alpine
           WORKDIR /usr/src/app
@@ -113,12 +131,6 @@ pipeline {
         }
       }
     }
-  }
-
-  options {
-    skipDefaultCheckout(true)
-    buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '10'))
-    timestamps()
   }
 
   post {
