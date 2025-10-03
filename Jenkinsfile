@@ -3,7 +3,7 @@ pipeline {
 
   environment {
     REGISTRY = "docker.io"
-    IMAGE    = "YOUR_DOCKERHUB_USERNAME/eb-express"
+    IMAGE    = "aryanghori/eb-express"
     TAG      = "build-${env.BUILD_NUMBER}"
     CREDS_ID = "dockerhub-creds"
   }
@@ -46,28 +46,37 @@ pipeline {
       }
     }
 
+    
     stage('Dependency Scan (Fail on High/Critical)') {
       steps {
-        sh '''
-          set -eux
-          mkdir -p owasp
-          docker run --rm \
-            -v "$PWD":/src \
-            -v "$PWD"/owasp:/report \
-            owasp/dependency-check:latest \
-            --scan /src \
-            --format "HTML" \
-            --out /report \
-            --project "eb-express" \
-            --failOnCVSS 7
-        '''
+    	sh '''
+     	 set -eux
+    	  # fresh, writable report dir for the container
+      	 rm -rf owasp
+     	 mkdir -p owasp
+     	 chmod -R 0777 owasp
+
+     	 docker run --rm \
+	   --user 0:0 \
+	   -v "$PWD":/src:ro \
+	   -v "$PWD"/owasp:/report \
+	   owasp/dependency-check:latest \
+	   --scan /src \
+	   --format "HTML" \
+	   --out /report \
+	   --project "eb-express" \
+	   --failOnCVSS 7
+  	'''
       }
       post {
         always {
-          archiveArtifacts artifacts: 'owasp/dependency-check-report.html', fingerprint: true
-        }
+      		// allowEmptyArchive avoids marking build failed if file name changes
+         archiveArtifacts artifacts: 'owasp/dependency-check-report.html', fingerprint: true, allowEmptyArchive: true
+    	}
       }
     }
+
+    
 
     stage('Build Docker Image') {
       steps {
@@ -104,6 +113,7 @@ pipeline {
   }
 
   options {
+    skipDefaultCheckout(true)
     buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '10'))
     timestamps()
   }
