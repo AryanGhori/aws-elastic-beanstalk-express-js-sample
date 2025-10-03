@@ -49,24 +49,27 @@ pipeline {
     
     stage('Dependency Scan (Fail on High/Critical)') {
       steps {
-    	sh '''
-     	 set -eux
-    	  # fresh, writable report dir for the container
-      	 rm -rf owasp
-     	 mkdir -p owasp
-     	 chmod -R 0777 owasp
+        withCredentials([string(credentialsId: 'NVD_API_KEY', variable: 'NVD_API_KEY')]) {
+       	  sh '''
+     	    set -eux
+    	    # fresh, writable report dir for the container
+      	    rm -rf owasp
+     	    mkdir -p owasp
+       	    chmod -R 0777 owasp
 
-     	 docker run --rm \
-	   --user 0:0 \
-	   -v "$PWD":/src:ro \
-	   -v "$PWD"/owasp:/report \
-	   owasp/dependency-check:latest \
-	   --scan /src \
-	   --format "HTML" \
-	   --out /report \
-	   --project "eb-express" \
-	   --failOnCVSS 7
-  	'''
+     	    docker run --rm \
+	      --user 0:0 \
+	      -e NVD_API_KEY=$NVD_API_KEY \
+	      -v "$PWD":/src:ro \
+	      -v "$PWD"/owasp:/report \
+	      owasp/dependency-check:latest \
+	      --scan /src \
+	      --format "HTML" \
+	      --out /report \
+	      --project "eb-express" \
+	      --failOnCVSS 7
+  	   '''
+         }
       }
       post {
         always {
